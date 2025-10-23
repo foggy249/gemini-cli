@@ -2,16 +2,28 @@
 
 ## Overview
 
-The Gemini Agent Framework (`@gemini-framework/core`) provides a lightweight, type-safe way to build AI agents and chat applications using Google's Gemini API. This guide covers everything you need to get started and build sophisticated AI applications.
+The Gemini Agent Framework (`@gemini-framework/core`) provides a **layered architecture** that enables customization at every level - from direct LLM calls to complex agent orchestration. Choose the abstraction level that fits your needs.
+
+## Layered Architecture
+
+The framework provides 4 distinct layers:
+
+| Layer | Purpose | Users | Complexity |
+|-------|---------|-------|------------|
+| **Layer 0** | Direct LLM Client Access | Advanced users | Low-level |
+| **Layer 1** | Simplified LLM Operations | App builders | Simple |
+| **Layer 2** | Conversation Management | Chatbot builders | Medium |
+| **Layer 3** | Agent Execution | AI agent builders | Advanced |
+| **Layer 4** | Orchestration (future) | System architects | Complex |
 
 ## Table of Contents
 
 1. [Installation & Setup](#installation--setup)
-2. [Quick Start Examples](#quick-start-examples)
-3. [Core Concepts](#core-concepts)
-4. [API Reference](#api-reference)
-5. [Building Agents](#building-agents)
-6. [Custom Tools](#custom-tools)
+2. [Layer 0: Direct LLM Access](#layer-0-direct-llm-access)
+3. [Layer 1: Simplified Operations](#layer-1-simplified-llm-operations)
+4. [Layer 2: Conversations](#layer-2-conversation-management)
+5. [Layer 3: Agents](#layer-3-agent-execution)
+6. [Building Custom Tools](#custom-tools)
 7. [Best Practices](#best-practices)
 8. [Troubleshooting](#troubleshooting)
 
@@ -39,19 +51,140 @@ npm run build
 export GEMINI_API_KEY="your-api-key-here"
 ```
 
-Or pass it programmatically:
+---
+
+## Layer 0: Direct LLM Access
+
+**For**: Advanced users who need full control over the SDK
+
+### Get LLM Client
 
 ```typescript
+import { AgentFramework } from '@gemini-framework/core';
+
 const framework = await AgentFramework.create({
-  apiKey: 'your-api-key-here'
+  apiKey: process.env.GEMINI_API_KEY
 });
+
+// Get direct access to GoogleGenAI client
+const client = framework.getLLMClient();
+const models = framework.getModels();
+
+// Make direct API calls
+const response = await models.generateContent({
+  model: 'gemini-2.0-flash-exp',
+  contents: [{ role: 'user', parts: [{ text: 'Hello' }] }],
+  config: {
+    temperature: 0.7,
+    topP: 0.95,
+    maxOutputTokens: 100
+  }
+});
+
+console.log(response.text);
+```
+
+**Use Cases:**
+- Custom caching strategies
+- Non-standard API features
+- Direct experimentation
+- Performance optimization
+
+---
+
+## Layer 1: Simplified LLM Operations
+
+**For**: Developers building custom LLM applications without agent complexity
+
+### Simple Generation
+
+```typescript
+// Basic generation with retry logic
+const text = await framework.generate({
+  prompt: 'Explain quantum computing in one paragraph',
+  temperature: 0.7,
+  maxOutputTokens: 200,
+  retries: 3,
+  timeout: 30000
+});
+
+console.log(text);
+```
+
+### Streaming Generation
+
+```typescript
+// Stream responses in real-time
+for await (const chunk of framework.generateStream({
+  prompt: 'Write a haiku about programming',
+  temperature: 0.9
+})) {
+  process.stdout.write(chunk);
+}
+```
+
+### Token Counting
+
+```typescript
+// Count tokens for cost estimation
+const tokenCount = await framework.countTokens({
+  contents: 'This is my prompt text'
+});
+
+console.log(`Tokens: ${tokenCount}`);
+
+// For conversations
+const count = await framework.countTokens({
+  contents: [
+    { role: 'user', content: 'Hello' },
+    { role: 'model', content: 'Hi there!' },
+    { role: 'user', content: 'How are you?' }
+  ]
+});
+```
+
+### Batch Generation
+
+```typescript
+// Process multiple prompts with controlled concurrency
+const results = await framework.generateBatch({
+  requests: [
+    { prompt: 'Capital of France?', maxOutputTokens: 10 },
+    { prompt: 'Capital of Germany?', maxOutputTokens: 10 },
+    { prompt: 'Capital of Italy?', maxOutputTokens: 10 },
+    { prompt: 'Capital of Spain?', maxOutputTokens: 10 }
+  ],
+  concurrency: 2  // Process 2 at a time
+});
+
+results.forEach((result, i) => {
+  console.log(`${i + 1}. ${result}`);
+});
+```
+
+**API Reference:**
+
+```typescript
+interface GenerateOptions {
+  model?: string;                // Default: 'gemini-2.0-flash-exp'
+  prompt: string;                // Required
+  systemInstruction?: string;    // Optional system prompt
+  temperature?: number;          // 0-1, controls randomness
+  topP?: number;                 // Nucleus sampling parameter
+  maxOutputTokens?: number;      // Limit response length
+  retries?: number;              // Auto-retry on failure (default: 0)
+  timeout?: number;              // Request timeout in ms
+  signal?: AbortSignal;          // For cancellation
+}
 ```
 
 ---
 
-## Quick Start Examples
+## Layer 2: Conversation Management
 
-### 1. Simple Chat
+**For**: Building chatbots and conversational applications
+
+### Basic Chat
 
 ```typescript
 import { AgentFramework } from '@gemini-framework/core';
