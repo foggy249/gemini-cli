@@ -9,7 +9,6 @@
  */
 
 import type { Content, FunctionDeclaration } from '@google/genai';
-import type { AnyDeclarativeTool } from '../tools/tools.js';
 import { type z } from 'zod';
 
 /**
@@ -98,7 +97,7 @@ export interface PromptConfig {
  * Configures the tools available to the agent during its execution.
  */
 export interface ToolConfig {
-  tools: Array<string | FunctionDeclaration | AnyDeclarativeTool>;
+  tools: Array<string | FunctionDeclaration>;
 }
 
 /**

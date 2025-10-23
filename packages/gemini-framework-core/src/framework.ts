@@ -8,7 +8,7 @@
  * Main Gemini Agent Framework class
  */
 
-import { GoogleGenerativeAI, type Content } from '@google/genai';
+import { GoogleGenAI, type Content, type GenerateContentParameters } from '@google/genai';
 import type {
   FrameworkConfig,
   AgentDefinition,
@@ -26,22 +26,22 @@ import { z } from 'zod';
  * Simple chat implementation
  */
 class SimpleChat implements Chat {
-  private genAI: GoogleGenerativeAI;
+  private genAI: GoogleGenAI;
   private config: ChatConfig;
   private history: Content[] = [];
-  private model;
-  private chat;
 
-  constructor(genAI: GoogleGenerativeAI, config: ChatConfig) {
+  constructor(genAI: GoogleGenAI, config: ChatConfig) {
     this.genAI = genAI;
     this.config = config;
-    this.initializeChat();
   }
 
-  private initializeChat() {
-    const modelConfig = {
+  async send(message: string): Promise<string> {
+    const userContent: Content = { role: 'user', parts: [{ text: message }] };
+    this.history.push(userContent);
+
+    const request: GenerateContentParameters = {
       model: this.config.model || 'gemini-2.0-flash-exp',
-      systemInstruction: this.config.systemPrompt,
+      contents: this.history,
       generationConfig:
         this.config.temperature !== undefined
           ? {
@@ -51,41 +51,48 @@ class SimpleChat implements Chat {
           : undefined,
     };
 
-    this.model = this.genAI.getGenerativeModel(modelConfig);
-    this.chat = this.model.startChat({ history: this.history });
-  }
+    const result = await this.genAI.models.generateContent(request);
+    const text = result.text || '';
 
-  async send(message: string): Promise<string> {
-    const result = await this.chat.sendMessage(message);
-    const response = result.response;
-    const text = response.text();
-
-    // Update history
-    this.history.push({ role: 'user', parts: [{ text: message }] });
-    this.history.push({ role: 'model', parts: [{ text }] });
+    const modelContent: Content = { role: 'model', parts: [{ text }] };
+    this.history.push(modelContent);
 
     return text;
   }
 
   async *sendStream(message: string): AsyncIterable<string> {
-    const result = await this.chat.sendMessageStream(message);
+    const userContent: Content = { role: 'user', parts: [{ text: message }] };
+    this.history.push(userContent);
+
+    const request: GenerateContentParameters = {
+      model: this.config.model || 'gemini-2.0-flash-exp',
+      contents: this.history,
+      generationConfig:
+        this.config.temperature !== undefined
+          ? {
+              temperature: this.config.temperature,
+              topP: this.config.topP || 0.95,
+            }
+          : undefined,
+    };
+
+    const result = await this.genAI.models.generateContentStream(request);
     
     let fullText = '';
-    for await (const chunk of result.stream) {
-      const text = chunk.text();
+    for await (const chunk of result) {
+      const text = chunk.text || '';
       fullText += text;
       yield text;
     }
 
-    // Update history
-    this.history.push({ role: 'user', parts: [{ text: message }] });
-    this.history.push({ role: 'model', parts: [{ text: fullText }] });
+    const modelContent: Content = { role: 'model', parts: [{ text: fullText }] };
+    this.history.push(modelContent);
   }
 
   getHistory(): ChatMessage[] {
     return this.history.map((content) => ({
       role: content.role as 'user' | 'model',
-      content: content.parts.map((p) => p.text || '').join(''),
+      content: content.parts?.map((p) => p.text || '').join('') || '',
     }));
   }
 }
@@ -94,7 +101,7 @@ class SimpleChat implements Chat {
  * Main Agent Framework
  */
 export class AgentFramework {
-  private genAI: GoogleGenerativeAI;
+  private genAI: GoogleGenAI;
   private config: FrameworkConfig;
   private toolRegistry: Map<string, ToolDefinition<object, unknown>>;
 
@@ -104,7 +111,7 @@ export class AgentFramework {
     }
     
     this.config = config;
-    this.genAI = new GoogleGenerativeAI(config.apiKey);
+    this.genAI = new GoogleGenAI({ apiKey: config.apiKey });
     this.toolRegistry = new Map();
 
     // Register provided tools
@@ -120,7 +127,7 @@ export class AgentFramework {
    */
   static async create(config: FrameworkConfig = {}): Promise<AgentFramework> {
     // Allow API key from environment
-    const apiKey = config.apiKey || process.env.GEMINI_API_KEY;
+    const apiKey = config.apiKey || process.env['GEMINI_API_KEY'];
     if (!apiKey) {
       throw new Error(
         'API key is required. Provide it via config.apiKey or GEMINI_API_KEY environment variable',

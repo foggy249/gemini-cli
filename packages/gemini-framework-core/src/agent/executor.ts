@@ -8,7 +8,7 @@
  * Simplified agent executor for the framework
  */
 
-import { GoogleGenerativeAI, type Content, type Part, type FunctionCall } from '@google/genai';
+import { GoogleGenAI, type Content, type Part, type FunctionCall, type GenerateContentParameters } from '@google/genai';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { z } from 'zod';
 import type {
@@ -29,10 +29,9 @@ export type ActivityCallback = (activity: AgentActivityEvent) => void;
  */
 export class AgentExecutor<TOutput extends z.ZodTypeAny> {
   readonly definition: AgentDefinition<TOutput>;
-  private readonly genAI: GoogleGenerativeAI;
+  private readonly genAI: GoogleGenAI;
   private readonly toolRegistry: Map<string, ToolDefinition<object, unknown>>;
   private readonly onActivity?: ActivityCallback;
-  private readonly agentId: string;
 
   constructor(
     definition: AgentDefinition<TOutput>,
@@ -41,12 +40,9 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
     onActivity?: ActivityCallback,
   ) {
     this.definition = definition;
-    this.genAI = new GoogleGenerativeAI(apiKey);
+    this.genAI = new GoogleGenAI({ apiKey });
     this.toolRegistry = toolRegistry;
     this.onActivity = onActivity;
-    
-    const randomIdPart = Math.random().toString(36).slice(2, 8);
-    this.agentId = `${this.definition.name}-${randomIdPart}`;
   }
 
   /**
@@ -72,23 +68,23 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
       // Prepare tools
       const tools = this.prepareToolsList();
       
-      // Create model
-      const model = this.genAI.getGenerativeModel({
+      // Create request parameters
+      const requestParams: Partial<GenerateContentParameters> = {
         model: this.definition.modelConfig.model,
-        systemInstruction: systemPrompt,
         tools,
         generationConfig: {
           temperature: this.definition.modelConfig.temp,
           topP: this.definition.modelConfig.top_p,
         },
-      });
+      };
 
-      // Start chat with initial messages
-      const history = this.definition.promptConfig.initialMessages || [];
-      const chat = model.startChat({ history });
-
-      // Send initial query
-      let currentMessage = query;
+      // Send initial query with system prompt and history
+      const systemMessages = systemPrompt ? [{ text: systemPrompt }] : [];
+      const initialContent: Content[] = [
+        ...(this.definition.promptConfig.initialMessages || []),
+        { role: 'user', parts: [{ text: query }] },
+      ];
+      let currentContents = initialContent;
 
       while (true) {
         // Check termination conditions
@@ -105,8 +101,14 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
         turnCounter++;
 
         // Send message to model
-        const result = await chat.sendMessage(currentMessage);
-        const response = result.response;
+        const request: GenerateContentParameters = {
+          model: requestParams.model!,
+          contents: currentContents,
+          tools: requestParams.tools,
+          generationConfig: requestParams.generationConfig,
+        };
+        const result = await this.genAI.models.generateContent(request);
+        const response = result;
 
         // Handle function calls
         const functionCalls = this.extractFunctionCalls(response);
@@ -114,7 +116,7 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
         if (functionCalls.length === 0) {
           // No function calls, end
           terminateReason = AgentTerminateMode.ERROR;
-          finalResult = response.text();
+          finalResult = response.text;
           break;
         }
 
@@ -129,7 +131,7 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
           }
 
           // Execute tool
-          const tool = this.toolRegistry.get(functionCall.name);
+          const tool = this.toolRegistry.get(functionCall.name ?? '');
           if (!tool) {
             throw new Error(`Tool not found: ${functionCall.name}`);
           }
@@ -141,7 +143,7 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
           });
 
           try {
-            const result = await tool.execute(functionCall.args, signal);
+            const result = await tool.execute(functionCall.args ?? {}, signal);
             functionResponses.push({
               functionResponse: {
                 name: functionCall.name,
@@ -176,8 +178,12 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
         }
 
         // Continue with function responses
-        currentMessage = '';
-        await chat.sendMessage(functionResponses);
+        const responseParts: Part[] = response.candidates?.[0]?.content?.parts || [];
+        currentContents = [
+          ...currentContents,
+          { role: 'model', parts: responseParts },
+          { role: 'user', parts: functionResponses },
+        ];
         // Loop continues
       }
 
@@ -284,7 +290,7 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
     return tools;
   }
 
-  private extractFunctionCalls(response: { candidates?: { content?: Content }[] }): FunctionCall[] {
+  private extractFunctionCalls(response: GenerateContentResponse): FunctionCall[] {
     const calls: FunctionCall[] = [];
     const content = response.candidates?.[0]?.content;
     if (content?.parts) {
