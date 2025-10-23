@@ -42,9 +42,12 @@ class SimpleChat implements Chat {
     const request: GenerateContentParameters = {
       model: this.config.model || 'gemini-2.0-flash-exp',
       contents: this.history,
-      generationConfig:
-        this.config.temperature !== undefined
+      config:
+        this.config.temperature !== undefined || this.config.systemPrompt
           ? {
+              systemInstruction: this.config.systemPrompt
+                ? { parts: [{ text: this.config.systemPrompt }] }
+                : undefined,
               temperature: this.config.temperature,
               topP: this.config.topP || 0.95,
             }
@@ -67,9 +70,12 @@ class SimpleChat implements Chat {
     const request: GenerateContentParameters = {
       model: this.config.model || 'gemini-2.0-flash-exp',
       contents: this.history,
-      generationConfig:
-        this.config.temperature !== undefined
+      config:
+        this.config.temperature !== undefined || this.config.systemPrompt
           ? {
+              systemInstruction: this.config.systemPrompt
+                ? { parts: [{ text: this.config.systemPrompt }] }
+                : undefined,
               temperature: this.config.temperature,
               topP: this.config.topP || 0.95,
             }
@@ -77,7 +83,7 @@ class SimpleChat implements Chat {
     };
 
     const result = await this.genAI.models.generateContentStream(request);
-    
+
     let fullText = '';
     for await (const chunk of result) {
       const text = chunk.text || '';

@@ -8,7 +8,16 @@
  * Simplified agent executor for the framework
  */
 
-import { GoogleGenAI, type Content, type Part, type FunctionCall, type GenerateContentParameters } from '@google/genai';
+import {
+  GoogleGenAI,
+  Type,
+  type Content,
+  type Part,
+  type FunctionCall,
+  type GenerateContentParameters,
+  type GenerateContentResponse,
+  type FunctionDeclaration,
+} from '@google/genai';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { z } from 'zod';
 import type {
@@ -65,26 +74,14 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
         inputs,
       );
 
-      // Prepare tools
-      const tools = this.prepareToolsList();
+      // Prepare tools for API
+      const tools = this.prepareToolsForAPI();
       
-      // Create request parameters
-      const requestParams: Partial<GenerateContentParameters> = {
-        model: this.definition.modelConfig.model,
-        tools,
-        generationConfig: {
-          temperature: this.definition.modelConfig.temp,
-          topP: this.definition.modelConfig.top_p,
-        },
-      };
-
-      // Send initial query with system prompt and history
-      const systemMessages = systemPrompt ? [{ text: systemPrompt }] : [];
-      const initialContent: Content[] = [
+      // Start conversation with initial query
+      const conversation: Content[] = [
         ...(this.definition.promptConfig.initialMessages || []),
         { role: 'user', parts: [{ text: query }] },
       ];
-      let currentContents = initialContent;
 
       while (true) {
         // Check termination conditions
@@ -100,25 +97,33 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
 
         turnCounter++;
 
-        // Send message to model
+        // Send message to model with correct API structure
         const request: GenerateContentParameters = {
-          model: requestParams.model!,
-          contents: currentContents,
-          tools: requestParams.tools,
-          generationConfig: requestParams.generationConfig,
+          model: this.definition.modelConfig.model,
+          contents: conversation,
+          config: {
+            systemInstruction: systemPrompt ? { parts: [{ text: systemPrompt }] } : undefined,
+            tools: tools.length > 0 ? tools : undefined,
+            temperature: this.definition.modelConfig.temp,
+            topP: this.definition.modelConfig.top_p,
+          },
         };
-        const result = await this.genAI.models.generateContent(request);
-        const response = result;
+        
+        const response = await this.genAI.models.generateContent(request);
 
-        // Handle function calls
+        // Extract function calls from response
         const functionCalls = this.extractFunctionCalls(response);
         
         if (functionCalls.length === 0) {
-          // No function calls, end
+          // No function calls, end (this shouldn't happen with proper agent design)
           terminateReason = AgentTerminateMode.ERROR;
-          finalResult = response.text;
+          finalResult = response.text || 'No response';
           break;
         }
+
+        // Add model response to conversation
+        const modelParts = response.candidates?.[0]?.content?.parts || [];
+        conversation.push({ role: 'model', parts: modelParts });
 
         // Execute function calls
         const functionResponses: Part[] = [];
@@ -133,7 +138,13 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
           // Execute tool
           const tool = this.toolRegistry.get(functionCall.name ?? '');
           if (!tool) {
-            throw new Error(`Tool not found: ${functionCall.name}`);
+            functionResponses.push({
+              functionResponse: {
+                name: functionCall.name!,
+                response: { error: `Tool not found: ${functionCall.name}` },
+              },
+            });
+            continue;
           }
 
           this.emitActivity({
@@ -146,7 +157,7 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
             const result = await tool.execute(functionCall.args ?? {}, signal);
             functionResponses.push({
               functionResponse: {
-                name: functionCall.name,
+                name: functionCall.name!,
                 response: { result: JSON.stringify(result) },
               },
             });
@@ -160,7 +171,7 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
             const errorMsg = error instanceof Error ? error.message : String(error);
             functionResponses.push({
               functionResponse: {
-                name: functionCall.name,
+                name: functionCall.name!,
                 response: { error: errorMsg },
               },
             });
@@ -177,17 +188,11 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
           break;
         }
 
-        // Continue with function responses
-        const responseParts: Part[] = response.candidates?.[0]?.content?.parts || [];
-        currentContents = [
-          ...currentContents,
-          { role: 'model', parts: responseParts },
-          { role: 'user', parts: functionResponses },
-        ];
-        // Loop continues
+        // Add function responses to conversation and continue
+        conversation.push({ role: 'user', parts: functionResponses });
       }
 
-      // Process final output
+      // Process final output if needed
       if (finalResult && this.definition.processOutput && this.definition.outputConfig) {
         try {
           const parsed = JSON.parse(finalResult);
@@ -224,9 +229,8 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
     });
   }
 
-  private prepareToolsList() {
-    const tools: { functionDeclarations: object[] }[] = [];
-    const functionDeclarations: object[] = [];
+  private prepareToolsForAPI(): { functionDeclarations: FunctionDeclaration[] }[] {
+    const functionDeclarations: FunctionDeclaration[] = [];
 
     // Add registered tools
     if (this.definition.toolConfig) {
@@ -234,34 +238,40 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
         if (typeof toolRef === 'string') {
           const tool = this.toolRegistry.get(toolRef);
           if (tool) {
+            const schema = zodToJsonSchema(tool.parameters) as Record<string, unknown>;
             functionDeclarations.push({
               name: tool.name,
               description: tool.description,
-              parameters: zodToJsonSchema(tool.parameters),
+              parameters: schema,
             });
           }
         } else if ('name' in toolRef && 'parameters' in toolRef) {
           // It's a ToolDefinition
+          const tool = toolRef as unknown as ToolDefinition<object, unknown>;
+          const schema = zodToJsonSchema(tool.parameters) as Record<string, unknown>;
           functionDeclarations.push({
-            name: toolRef.name,
-            description: toolRef.description,
-            parameters: zodToJsonSchema((toolRef as ToolDefinition<object, unknown>).parameters),
+            name: tool.name,
+            description: tool.description,
+            parameters: schema,
           });
         } else {
           // It's a raw FunctionDeclaration
-          functionDeclarations.push(toolRef);
+          functionDeclarations.push(toolRef as FunctionDeclaration);
         }
       }
     }
 
     // Add complete_task tool
     if (this.definition.outputConfig) {
-      const outputSchema = zodToJsonSchema(this.definition.outputConfig.schema);
+      const outputSchema = zodToJsonSchema(this.definition.outputConfig.schema) as Record<
+        string,
+        unknown
+      >;
       functionDeclarations.push({
         name: TASK_COMPLETE_TOOL_NAME,
         description: 'Call this function when you have completed the task.',
         parameters: {
-          type: 'object',
+          type: Type.OBJECT,
           properties: {
             [this.definition.outputConfig.outputName]: outputSchema,
           },
@@ -274,20 +284,20 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
         name: TASK_COMPLETE_TOOL_NAME,
         description: 'Call this function when you have completed the task.',
         parameters: {
-          type: 'object',
+          type: Type.OBJECT,
           properties: {
-            result: { type: 'string', description: 'The final result' },
+            result: { type: Type.STRING, description: 'The final result' },
           },
           required: ['result'],
         },
       });
     }
 
-    if (functionDeclarations.length > 0) {
-      tools.push({ functionDeclarations });
+    if (functionDeclarations.length === 0) {
+      return [];
     }
 
-    return tools;
+    return [{ functionDeclarations }];
   }
 
   private extractFunctionCalls(response: GenerateContentResponse): FunctionCall[] {
