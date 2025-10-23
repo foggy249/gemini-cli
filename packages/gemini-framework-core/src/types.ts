@@ -144,6 +144,37 @@ export interface FrameworkConfig {
 }
 
 /**
+ * Options for simplified generation (Layer 1)
+ */
+export interface GenerateOptions {
+  model?: string;
+  prompt: string;
+  systemInstruction?: string;
+  temperature?: number;
+  topP?: number;
+  maxOutputTokens?: number;
+  retries?: number;
+  timeout?: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Options for token counting (Layer 1)
+ */
+export interface CountTokensOptions {
+  model?: string;
+  contents: string | Array<{ role: string; content: string }>;
+}
+
+/**
+ * Batch generation options (Layer 1)
+ */
+export interface BatchGenerateOptions {
+  requests: GenerateOptions[];
+  concurrency?: number;
+}
+
+/**
  * Chat configuration
  */
 export interface ChatConfig {

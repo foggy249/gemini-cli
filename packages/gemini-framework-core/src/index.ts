@@ -33,6 +33,10 @@ export type {
   OutputConfig,
   ModelConfig,
   RunConfig,
+  // Layer 1 types
+  GenerateOptions,
+  CountTokensOptions,
+  BatchGenerateOptions,
 } from './types.js';
 
 // Enums

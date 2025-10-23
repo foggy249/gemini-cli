@@ -8,7 +8,12 @@
  * Main Gemini Agent Framework class
  */
 
-import { GoogleGenAI, type Content, type GenerateContentParameters } from '@google/genai';
+import {
+  GoogleGenAI,
+  type Content,
+  type GenerateContentParameters,
+  type CountTokensParameters,
+} from '@google/genai';
 import type {
   FrameworkConfig,
   AgentDefinition,
@@ -18,6 +23,9 @@ import type {
   ChatConfig,
   Chat,
   ChatMessage,
+  GenerateOptions,
+  CountTokensOptions,
+  BatchGenerateOptions,
 } from './types.js';
 import { AgentExecutor, type ActivityCallback } from './agent/executor.js';
 import { z } from 'zod';
@@ -207,6 +215,235 @@ export class AgentFramework {
   ): Promise<string> {
     const chat = await this.createChat(options);
     return chat.send(message);
+  }
+
+  // ========================================
+  // Layer 0: Direct LLM Client Access
+  // ========================================
+
+  /**
+   * Get direct access to the underlying GoogleGenAI client for advanced use cases.
+   * This provides full control over all SDK features.
+   * 
+   * @example
+   * ```typescript
+   * const client = framework.getLLMClient();
+   * const response = await client.models.generateContent({...});
+   * ```
+   */
+  getLLMClient(): GoogleGenAI {
+    return this.genAI;
+  }
+
+  /**
+   * Get the models API for direct generation calls.
+   * 
+   * @example
+   * ```typescript
+   * const models = framework.getModels();
+   * const response = await models.generateContent({...});
+   * ```
+   */
+  getModels() {
+    return this.genAI.models;
+  }
+
+  // ========================================
+  // Layer 1: Simplified LLM Operations
+  // ========================================
+
+  /**
+   * Generate content with a simplified API and built-in retry logic.
+   * This is a convenience wrapper around the SDK's generateContent method.
+   * 
+   * @example
+   * ```typescript
+   * const text = await framework.generate({
+   *   prompt: 'Explain quantum computing',
+   *   temperature: 0.7,
+   *   retries: 3
+   * });
+   * ```
+   */
+  async generate(options: GenerateOptions): Promise<string> {
+    const {
+      model = this.config.model || 'gemini-2.0-flash-exp',
+      prompt,
+      systemInstruction,
+      temperature,
+      topP,
+      maxOutputTokens,
+      retries = 0,
+      timeout,
+      signal,
+    } = options;
+
+    const request: GenerateContentParameters = {
+      model,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: {
+        systemInstruction: systemInstruction
+          ? { parts: [{ text: systemInstruction }] }
+          : undefined,
+        temperature,
+        topP,
+        maxOutputTokens,
+      },
+    };
+
+    return this.executeWithRetry(request, retries, timeout, signal);
+  }
+
+  /**
+   * Generate content with streaming response.
+   * 
+   * @example
+   * ```typescript
+   * for await (const chunk of framework.generateStream({ prompt: 'Write a poem' })) {
+   *   process.stdout.write(chunk);
+   * }
+   * ```
+   */
+  async *generateStream(options: GenerateOptions): AsyncIterable<string> {
+    const {
+      model = this.config.model || 'gemini-2.0-flash-exp',
+      prompt,
+      systemInstruction,
+      temperature,
+      topP,
+      maxOutputTokens,
+      signal,
+    } = options;
+
+    const request: GenerateContentParameters = {
+      model,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: {
+        systemInstruction: systemInstruction
+          ? { parts: [{ text: systemInstruction }] }
+          : undefined,
+        temperature,
+        topP,
+        maxOutputTokens,
+        abortSignal: signal,
+      },
+    };
+
+    const result = await this.genAI.models.generateContentStream(request);
+
+    for await (const chunk of result) {
+      const text = chunk.text || '';
+      if (text) yield text;
+    }
+  }
+
+  /**
+   * Count tokens in the given content.
+   * Useful for estimating costs and checking limits.
+   * 
+   * @example
+   * ```typescript
+   * const count = await framework.countTokens({
+   *   contents: 'This is my prompt'
+   * });
+   * console.log(`Tokens: ${count}`);
+   * ```
+   */
+  async countTokens(options: CountTokensOptions): Promise<number> {
+    const { model = this.config.model || 'gemini-2.0-flash-exp', contents } = options;
+
+    let contentsArray: Content[];
+    if (typeof contents === 'string') {
+      contentsArray = [{ role: 'user', parts: [{ text: contents }] }];
+    } else {
+      contentsArray = contents.map((item) => ({
+        role: item.role,
+        parts: [{ text: item.content }],
+      }));
+    }
+
+    const request: CountTokensParameters = {
+      model,
+      contents: contentsArray,
+    };
+
+    const result = await this.genAI.models.countTokens(request);
+    return result.totalTokens || 0;
+  }
+
+  /**
+   * Generate content for multiple prompts in parallel or with controlled concurrency.
+   * 
+   * @example
+   * ```typescript
+   * const results = await framework.generateBatch({
+   *   requests: [
+   *     { prompt: 'Question 1' },
+   *     { prompt: 'Question 2' },
+   *     { prompt: 'Question 3' }
+   *   ],
+   *   concurrency: 2
+   * });
+   * ```
+   */
+  async generateBatch(options: BatchGenerateOptions): Promise<string[]> {
+    const { requests, concurrency = Infinity } = options;
+
+    if (concurrency === Infinity) {
+      // Parallel execution
+      return Promise.all(requests.map((req) => this.generate(req)));
+    }
+
+    // Controlled concurrency
+    const results: string[] = [];
+    for (let i = 0; i < requests.length; i += concurrency) {
+      const batch = requests.slice(i, i + concurrency);
+      const batchResults = await Promise.all(batch.map((req) => this.generate(req)));
+      results.push(...batchResults);
+    }
+
+    return results;
+  }
+
+  /**
+   * Private helper for executing requests with retry logic
+   */
+  private async executeWithRetry(
+    request: GenerateContentParameters,
+    retries: number,
+    timeout?: number,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    let lastError: Error | undefined;
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        // Add timeout if specified
+        if (timeout && request.config) {
+          request.config.abortSignal = signal || AbortSignal.timeout(timeout);
+        } else if (signal && request.config) {
+          request.config.abortSignal = signal;
+        }
+
+        const result = await this.genAI.models.generateContent(request);
+        return result.text || '';
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+
+        // Don't retry on abort
+        if (signal?.aborted || lastError.name === 'AbortError') {
+          throw lastError;
+        }
+
+        // Wait before retry (exponential backoff)
+        if (attempt < retries) {
+          const delay = Math.pow(2, attempt) * 1000;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    throw lastError || new Error('Request failed after retries');
   }
 }
 
