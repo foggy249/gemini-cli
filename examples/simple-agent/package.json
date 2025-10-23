@@ -1,0 +1,20 @@
+{
+  "name": "simple-agent-example",
+  "version": "0.1.0",
+  "description": "Simple agent example using @gemini-framework/core",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "chat": "node chat-example.js",
+    "tool": "node tool-example.js",
+    "agent": "node agent-example.js"
+  },
+  "dependencies": {
+    "@gemini-framework/core": "file:../../packages/gemini-framework-core",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
