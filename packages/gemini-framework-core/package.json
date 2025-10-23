@@ -1,0 +1,52 @@
+{
+  "name": "@gemini-framework/core",
+  "version": "0.1.0",
+  "description": "Lightweight framework for building AI agents with Google Gemini",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/google-gemini/gemini-cli.git",
+    "directory": "packages/gemini-framework-core"
+  },
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/build_package.js",
+    "lint": "eslint . --ext .ts,.tsx",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:ci": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "gemini",
+    "ai",
+    "agent",
+    "framework",
+    "llm",
+    "genai"
+  ],
+  "dependencies": {
+    "@google/genai": "1.16.0",
+    "zod": "^3.23.8",
+    "zod-to-json-schema": "^3.23.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "typescript": "^5.3.3",
+    "vitest": "^3.1.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
